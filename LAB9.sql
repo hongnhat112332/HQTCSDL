@@ -103,3 +103,128 @@ END;
 
 /*câu 3. Tạo trigger kiểm soát việc xóa phiếu xuất, 
 khi phiếu xuất xóa thì số lượng hàng trong bảng sanpham sẽ được cập nhật tăng lên.*/
+CREATE TRIGGER xoa_phieu_xuat
+ON Xuat
+FOR DELETE
+AS
+BEGIN
+    DECLARE @masp INT
+    DECLARE @soluongX INT
+    
+    DECLARE curXuat CURSOR FOR SELECT masp, soluongX FROM deleted
+    OPEN curXuat
+    FETCH NEXT FROM curXuat INTO @masp, @soluongX
+    
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        UPDATE Sanpham SET soluong = soluong + @soluongX WHERE masp = @masp
+        FETCH NEXT FROM curXuat INTO @masp, @soluongX
+    END
+    
+    CLOSE curXuat
+    DEALLOCATE curXuat
+END
+GO
+
+/*câu 4. Tạo trigger cho việc cập nhật lại số lượng xuất trong bảng xuất, 
+hãy kiểm tra xem số lượng xuất thay đổi có nhỏ hơn số lượng trong bảng sanpham hay không? 
+số bản ghi thay đổi >1 bản ghi hay không?
+ nếu thỏa mãn thì cho phép update bảng xuất và update lại soluong trong bảng sanpham.*/
+ CREATE TRIGGER cap_nhat_soluongxuat
+ON Xuat
+AFTER UPDATE
+AS
+BEGIN
+    -- Kiểm tra xem có ít nhất 1 bản ghi bị thay đổi hay không
+    IF @@ROWCOUNT = 0
+        RETURN;
+
+    -- Kiểm tra xem số lượng xuất thay đổi có nhỏ hơn số lượng trong bảng sanpham hay không
+    IF EXISTS (
+        SELECT x.masp
+        FROM inserted i
+        JOIN Xuat x ON i.sohdx = x.sohdx
+        JOIN Sanpham s ON x.masp = s.masp
+        WHERE i.soluongX < x.soluongX - s.soluong
+    )
+    BEGIN
+        RAISERROR('Số lượng xuất thay đổi không hợp lệ!', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    -- Cập nhật lại soluong trong bảng sanpham
+    UPDATE Sanpham
+    SET soluong = soluong + (
+        SELECT SUM(i.soluongX - u.soluongX)
+        FROM inserted i
+        JOIN Xuat u ON i.sohdx = u.sohdx AND i.masp = u.masp
+    )
+    WHERE masp IN (
+        SELECT masp
+        FROM inserted
+    )
+
+    -- Cập nhật lại bảng xuất
+    UPDATE Xuat
+    SET soluongX = i.soluongX
+    FROM inserted i
+    WHERE Xuat.sohdx = i.sohdx AND Xuat.masp = i.masp
+END
+
+/*5. Tạo trigger cho việc cập nhật lại số lượng Nhập trong bảng Nhập.
+ Hãy kiểm tra xem số bản ghi thay đổi >1 bản ghi hay không? 
+ nếu thỏa mãn thì cho phép update bảng Nhập và update lại soluog trong bảng sanpham.*/
+ CREATE TRIGGER update_soluong_nhap
+ON Nhap
+AFTER UPDATE
+AS
+BEGIN
+    DECLARE @count INT;
+    SELECT @count = COUNT(*) FROM INSERTED;
+
+    IF @count > 1
+    BEGIN
+        RAISERROR('Cannot update more than 1 row at a time', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    DECLARE @masp INT;
+    DECLARE @soluongN INT;
+
+    SELECT @masp = i.masp, @soluongN = i.soluongN
+    FROM INSERTED i;
+
+    IF @soluongN < 0
+    BEGIN
+        RAISERROR('Số lượng nhập phải lớn hơn hoặc bằng 0', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    UPDATE Sanpham
+    SET Soluong = Soluong - (SELECT SoluongN FROM DELETED WHERE masp = @masp) + @soluongN
+    WHERE MaSP = @masp;
+
+END
+
+/*6. Tạo trigger kiểm soát việc xóa phiếu nhập, 
+khi phiếu nhập xóa thì số lượng hàng trong bảng sanpham sẽ được cập nhật giảm xuống.*/
+
+CREATE TRIGGER [dbo].[xoa_phieu_nhap]
+ON [dbo].[Nhap]
+AFTER DELETE
+AS
+BEGIN
+    DECLARE @masp INT, @soluong INT
+
+    -- Lấy thông tin sản phẩm và số lượng hàng cần cập nhật
+    SELECT @masp = d.Masp, @soluong = d.SoluongN
+    FROM deleted d
+
+    -- Cập nhật lại số lượng hàng trong bảng sanpham
+    UPDATE Sanpham
+    SET Soluong = Soluong - @soluong
+    WHERE Masp = @masp
+END
